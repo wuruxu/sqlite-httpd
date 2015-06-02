@@ -3,6 +3,6 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#define DD(...) fprintf(stderr, "*****:"__VA_ARGS__)
+#define DD(...) fprintf(stdout, "*****:"__VA_ARGS__)
 
 #endif

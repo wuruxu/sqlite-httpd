@@ -54,9 +54,10 @@ static int parse_http_request_header(void *cls, enum MHD_ValueKind kind, const c
 
   if(strcmp(key, "Accept-Encoding") == 0) {
     if(strcmp(value, "gzip, deflate") == 0) {
-      sr->compress = 1;
+      DD("http compress support enable\n");
+      sqlite_httpreq_set_compress(sr, 1);
     } else {
-      sr->compress = 0;
+      sqlite_httpreq_set_compress(sr, 0);
     }
   }
 
@@ -72,6 +73,7 @@ static int generate_json_from_stmt(char* buf, size_t max, sqlite_json_info_t* sj
   sqlite3_stmt *stmt = sji->stmt;
   char *ptr = buf;
 
+  //DD("buf.addr = %x\n", buf);
   if(sji->rstart == 0) {
     *ptr = ',', *(ptr+1) = '{', off = 2;
   } else {
@@ -79,11 +81,9 @@ static int generate_json_from_stmt(char* buf, size_t max, sqlite_json_info_t* sj
     *ptr = '{', off = 1;
   }
 
-  for(; i < sji->ncol; i++) {
+  for(buf=ptr+off; i < sji->ncol; i++) {
     int nbytes = 0;
     int type = sji->coltypes[i];
-    //DD("--buf= %s\n", buf);
-    buf = ptr + off;
     switch(type) {
       case SQLITE_INTEGER:
       //DD("SQLITE_INTEGER: %s:%d\n",  sji->colnames[i], sqlite3_column_int(stmt, i));
@@ -107,6 +107,7 @@ static int generate_json_from_stmt(char* buf, size_t max, sqlite_json_info_t* sj
       const char *text = sqlite3_column_text(stmt, i);
       if(! text) {
         text = "null";
+      } else {
       }
       json_object *obj = json_object_new_string(text);
       nbytes = sprintf(buf, "\"%s\":%s,", sji->colnames[i], json_object_to_json_string(obj));
@@ -115,43 +116,136 @@ static int generate_json_from_stmt(char* buf, size_t max, sqlite_json_info_t* sj
       }
     }
     off += nbytes;
+    buf += nbytes;
   }
   *(ptr+off-1) = '}';
 
-  //DD("ROW: %s\n", ptr);
+  //DD("ROW %x: %s\n", ptr+off-1, ptr);
   return off;
 }
 
 static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size_t max) {
   sqlite_json_info_t *sji = (sqlite_json_info_t *) cls;
-  int ret, nbyte = 0;
+  int ret, nbyte = 0, err;
+  char *respbuf = NULL;
+  int outsize = 0;
+  int _max = max;
+
+  if(sji->eos == EOS_TRUE) {
+    return MHD_CONTENT_READER_END_OF_STREAM;
+  }/**sji->eos == 1*/
 
   //DD("sqlite_row_read_callback: pos = %d, buf = %x, max = %zu\n", pos, (unsigned int)buf, max);
-  if(sji->eos == 1) {
-    return MHD_CONTENT_READER_END_OF_STREAM;
-  }
 
-  ret = sqlite3_step(sji->stmt);
-  //buf = buf + pos;
-  if(ret == SQLITE_ROW) {
-    if(!sqlite_json_info_initialized(sji)) {
-       nbyte = sprintf(buf, "{\"jsondata\":[");
-       buf = buf + nbyte;
-       max -= nbyte;
-       sqlite_json_info_init(sji);
+  if(sji->compress) {
+    sji->zs.next_out = buf;
+    sji->zs.avail_out = _max;
+    if(sji->zs.avail_in > 0 || sji->eos == EOS_GZING) {
+      goto buf_compress;
     }
-
-    nbyte += generate_json_from_stmt(buf, max, sji);
-    return nbyte;
-  } else if(ret == SQLITE_DONE) {
-    sqlite_json_info_set_eos(sji, 1);
-    nbyte = sprintf(buf, "]}");
-    return nbyte;
-  } else {
-    return MHD_CONTENT_READER_END_WITH_ERROR;
   }
 
-  return 0;
+  do {
+    int rowcnt = 0;
+    max = _max, outsize = 0, respbuf = sji->compress ? sji->gzbuf: buf;
+
+    DD("S1-deflate out: ai %d, ao %d\n", sji->zs.avail_in, sji->zs.avail_out);
+
+    while(outsize < max) {
+      nbyte = 0;
+      ret = sqlite3_step(sji->stmt);
+      //buf = buf + pos;
+      //DD("respbuf=%s.\n", buf);
+      if(ret == SQLITE_ROW) {
+        rowcnt++;
+        if(!sqlite_json_info_initialized(sji)) {
+           nbyte = sprintf(respbuf, "{\"jsondata\":[");
+           respbuf += nbyte;
+           outsize += nbyte;
+           //max -= nbyte;
+           sqlite_json_info_init(sji);
+        }
+
+        nbyte = generate_json_from_stmt(respbuf, _max-outsize, sji);
+        respbuf += nbyte;
+        outsize += nbyte;
+        max = _max - nbyte - nbyte;
+        //max -= nbyte;
+      } else if(ret == SQLITE_DONE) {
+        nbyte = sprintf(respbuf, "]}");
+        sqlite_json_info_set_eos(sji, EOS_TRUE);
+        outsize += nbyte;
+        break;
+      } else {
+        if(sji->compress) {
+          DD("deflateEnd\n");
+          deflateEnd(&sji->zs);
+        }
+        DD("MHD_CONTENT_READER_END_WITH_ERROR\n");
+        return MHD_CONTENT_READER_END_WITH_ERROR;
+      }
+    } /**nbyte < max*/
+
+    //DD("rowcnt = %d, outsize = %d, outbuf = %s\n", rowcnt, outsize, buf);
+
+    if(sji->compress) {
+        //DD("S2-deflate out: outsize= %d, _max %d , ai %d, ao %d\n", outsize, _max,  sji->zs.avail_in, sji->zs.avail_out);
+        sji->zs.next_in = sji->gzbuf;
+        sji->zs.avail_in = outsize;
+
+  buf_compress:
+        //DD("S3-deflate out: ni %p, no %p , ai %d, ao %d\n", sji->zs.next_in, sji->zs.next_out,  sji->zs.avail_in, sji->zs.avail_out);
+        while(sji->zs.avail_in != 0) {
+          //DD("W01-deflate out: ai %d, ao %d, msg=%s\n", sji->zs.avail_in, sji->zs.avail_out, sji->zs.msg);
+          err = deflate(&sji->zs, Z_NO_FLUSH);
+          if(Z_OK != err && Z_STREAM_END != err && Z_BUF_ERROR != err) {
+            DD("deflate != Z_OK, err = %d\n", err);
+            return err;
+          }
+
+          //DD("W02-deflate out: ni %p, no %p , ai %d, ao %d, msg=%s, err = %x\n", sji->zs.next_in, sji->zs.next_out,  sji->zs.avail_in, sji->zs.avail_out, sji->zs.msg, err);
+          if(sji->zs.next_in) {
+            if(sji->zs.avail_in == 0) {
+              sji->zs.next_in = NULL;
+              break;
+            }
+          }
+          if(sji->zs.avail_out == 0) {
+            //DD("W03-deflate out: ai %d, ao %d, msg=%s\n", sji->zs.avail_in, sji->zs.avail_out, sji->zs.msg);
+            break;
+          }
+        }
+
+        if(sji->eos == EOS_TRUE || sji->eos == EOS_GZING) {
+          sqlite_json_info_set_eos(sji, EOS_GZING);
+          do {
+            err = deflate(&sji->zs, Z_FINISH);
+            //DD("deflate.Z_FINISH errcode = %d, ai %d, ao %d\n", err, sji->zs.avail_in, sji->zs.avail_out);
+            if(err != Z_OK) {
+              if(err != Z_STREAM_END) return MHD_CONTENT_READER_END_WITH_ERROR;
+            } else {
+              if(sji->zs.avail_out == 0) {
+                return _max;
+              }
+            }
+          } while(err != Z_STREAM_END);
+          sqlite_json_info_set_eos(sji, EOS_TRUE);
+
+          if(Z_OK != deflateEnd(&sji->zs)) {
+            //DD("deflateEnd: gz compress failed\n");
+          }
+          //DD("sji->eos is ready, Z_FINISH.err = %x, ai %d, ao %d\n", err,  sji->zs.avail_in, sji->zs.avail_out);
+          break;
+        }
+    } /*compress = 1*/
+
+    DD("S4-deflate out: ai %d, ao %d\n", sji->zs.avail_in, sji->zs.avail_out);
+  } while(sji->compress && sji->zs.avail_out > 0);
+
+  outsize = sji->compress ? _max - sji->zs.avail_out : outsize;
+  //DD("END-callback deflate out: ai %d, ao %d, outsize = %d\n\n", sji->zs.avail_in, sji->zs.avail_out, outsize);
+
+  return outsize;
 }
 
 static struct MHD_Response* process_sqlite_request(sqlite_httpreq_t *sr) {
@@ -169,8 +263,8 @@ static struct MHD_Response* process_sqlite_request(sqlite_httpreq_t *sr) {
     DD("sbuf = %s\n\n", sbuf);
     ret = sqlite3_prepare_v2(shd.db, sbuf, len, &stmt, NULL);
     free(sbuf);
-    sji = sqlite_json_info_new(stmt);
-    resp = MHD_create_response_from_callback(MHD_SIZE_UNKNOWN, 1024*16, sqlite_row_read_callback, sji, sqlite_json_info_free);
+    sji = sqlite_json_info_new(stmt, sr->compress);
+    resp = MHD_create_response_from_callback(MHD_SIZE_UNKNOWN, GZ_CACHE_SIZE, sqlite_row_read_callback, sji, sqlite_json_info_free);
     if(resp == NULL) {
       resp = MHD_create_response_from_buffer(sizeof(fake_ok_resp)-1, (void *)fake_ok_resp, MHD_RESPMEM_PERSISTENT);
     }
@@ -190,7 +284,7 @@ static int answer_http_connection (void* cls, struct MHD_Connection* connection,
     if(strcmp(url, "/sqlite") == 0) {
       sqlite_httpreq_t *sr = (sqlite_httpreq_t *) *con_cls;
 
-      //DD("POST url %s, upload_data = %x, data_size = %d, sr = %x\n", url, (int)upload_data, (int)*upload_data_size, (unsigned int)sr);
+      DD("POST url %s, upload_data = %x, data_size = %d, sr = %x\n", url, (int)upload_data, (int)*upload_data_size, (unsigned int)sr);
       if(sr == NULL) {
         reqcnt++;
         DD("serve reqest count id %d\n", reqcnt);
@@ -221,6 +315,9 @@ static int answer_http_connection (void* cls, struct MHD_Connection* connection,
       }
 
       resp = process_sqlite_request(sr);
+      if(sr->compress) {
+        MHD_add_response_header(resp, "Content-Encoding", "gzip");
+      }
       //MHD_queue_response(connection, MHD_HTTP_OK, resp);
       //MHD_destroy_response(resp);
       sqlite_httpreq_free(sr);

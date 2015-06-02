@@ -6,8 +6,13 @@ sqlite_httpreq_t *sqlite_httpreq_new(const char *url) {
 
   sr->url = url;
   sr->buf = evbuffer_new();
+  sr->compress = 0;
 
   return sr;
+}
+
+void sqlite_httpreq_set_compress(sqlite_httpreq_t *sr, int compress) {
+  sr->compress = compress;
 }
 
 void sqlite_httpreq_free(sqlite_httpreq_t *sr) {

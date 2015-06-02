@@ -12,5 +12,7 @@ typedef struct {
 
 sqlite_httpreq_t *sqlite_httpreq_new(const char *url);
 
+void sqlite_httpreq_set_compress(sqlite_httpreq_t *sji, int compress);
+
 void sqlite_httpreq_free(sqlite_httpreq_t *sr);
 #endif
