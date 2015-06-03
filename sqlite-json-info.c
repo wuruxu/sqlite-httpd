@@ -9,13 +9,14 @@ sqlite_json_info_t* sqlite_json_info_new(sqlite3_stmt* stmt, int compress) {
 
   if(!sji) return NULL;
 
-  sji->compress = compress;
-  sji->zs.zalloc = (alloc_func) 0;
-  sji->zs.zfree = (free_func) 0;
-  sji->zs.opaque = (voidpf) 0;
-  if(Z_OK != deflateInit2(&sji->zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, MAX_WBITS+16, 8, Z_DEFAULT_STRATEGY)) {
-    free(sji);
-    return NULL;
+  if(compress) {
+    sji->zs.zalloc = (alloc_func) 0;
+    sji->zs.zfree = (free_func) 0;
+    sji->zs.opaque = (voidpf) 0;
+    if(Z_OK != deflateInit2(&sji->zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, MAX_WBITS+16, 8, Z_DEFAULT_STRATEGY)) {
+      free(sji);
+      return NULL;
+    }
   }
 
   sji->stmt = stmt;
@@ -35,7 +36,9 @@ sqlite_json_info_t* sqlite_json_info_new(sqlite3_stmt* stmt, int compress) {
 
     return NULL;
   }
-  sji->gzbuf = calloc(GZ_CACHE_SIZE, sizeof(char));
+  if(compress) {
+    sji->gzbuf = calloc(GZ_CACHE_SIZE, sizeof(char));
+  }
 
   return sji;
 }

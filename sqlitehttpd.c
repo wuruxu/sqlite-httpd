@@ -315,12 +315,14 @@ static int answer_http_connection (void* cls, struct MHD_Connection* connection,
       }
 
       resp = process_sqlite_request(sr);
-      if(sr->compress) {
+      if(resp && sr->compress) {
         MHD_add_response_header(resp, "Content-Encoding", "gzip");
       }
       //MHD_queue_response(connection, MHD_HTTP_OK, resp);
       //MHD_destroy_response(resp);
+      MHD_destroy_post_processor(sr->post_processor);
       sqlite_httpreq_free(sr);
+      *con_cls = NULL;
     }/** url=/sqlite */
   } else if (strcmp(method, MHD_HTTP_METHOD_GET) == 0) {
     resp = MHD_create_response_from_buffer(sizeof(fake_ok_resp)-1, (void *)fake_ok_resp, MHD_RESPMEM_PERSISTENT);
