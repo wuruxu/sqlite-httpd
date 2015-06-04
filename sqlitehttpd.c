@@ -172,7 +172,11 @@ static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size
         max = _max - nbyte - nbyte;
         //max -= nbyte;
       } else if(ret == SQLITE_DONE) {
-        nbyte = sprintf(respbuf, "]}");
+        if(rowcnt == 0) {
+          nbyte = sprintf(respbuf, "{\"jsondata\":[]}");
+        } else {
+          nbyte = sprintf(respbuf, "]}");
+        }
         sqlite_json_info_set_eos(sji, EOS_TRUE);
         outsize += nbyte;
         break;
@@ -251,14 +255,14 @@ static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size
 static struct MHD_Response* process_sqlite_request(sqlite_httpreq_t *sr) {
   struct MHD_Response *resp = NULL;
   int len = evbuffer_get_length(sr->buf);
-  char *sbuf = calloc(len, sizeof(char));
+  char *sbuf = calloc(len+1, sizeof(char));
   struct sqlite3_stmt* stmt = NULL;
   int ret = 0;
   struct evbuffer *jsonbuf = NULL;
   sqlite_json_info_t *sji = NULL;
 
   if(sbuf != NULL) {
-    evbuffer_remove(sr->buf, sbuf, len-1);
+    evbuffer_remove(sr->buf, sbuf, len);
     
     DD("sbuf = %s\n\n", sbuf);
     ret = sqlite3_prepare_v2(shd.db, sbuf, len, &stmt, NULL);
