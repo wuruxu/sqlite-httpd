@@ -173,7 +173,7 @@ static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size
         //max -= nbyte;
       } else if(ret == SQLITE_DONE) {
         if(rowcnt == 0) {
-          nbyte = sprintf(respbuf, "{\"jsondata\":[]}");
+          nbyte = sprintf(respbuf, "{\"jsondata\":[\"status\": \"SQLITE_DONE\"]}");
         } else {
           nbyte = sprintf(respbuf, "]}");
         }
@@ -181,12 +181,17 @@ static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size
         outsize += nbyte;
         break;
       } else {
+        json_object *obj = NULL;
         if(sji->compress) {
           DD("deflateEnd\n");
           deflateEnd(&sji->zs);
         }
-        DD("MHD_CONTENT_READER_END_WITH_ERROR\n");
-        return MHD_CONTENT_READER_END_WITH_ERROR;
+        obj = json_object_new_string(sqlite3_errmsg(sqlite3_db_handle(sji->stmt)));
+        nbyte = sprintf(respbuf, "{\"jsondata\":[\"errmsg\": %s]}", json_object_to_json_string(obj));
+        json_object_put(obj);
+        sqlite_json_info_set_eos(sji, EOS_TRUE);
+        outsize += nbyte;
+        break;
       }
     } /**nbyte < max*/
 
@@ -263,14 +268,29 @@ static struct MHD_Response* process_sqlite_request(sqlite_httpreq_t *sr) {
 
   if(sbuf != NULL) {
     evbuffer_remove(sr->buf, sbuf, len);
-    
     DD("sbuf = %s\n\n", sbuf);
     ret = sqlite3_prepare_v2(shd.db, sbuf, len, &stmt, NULL);
     free(sbuf);
-    sji = sqlite_json_info_new(stmt, sr->compress);
-    resp = MHD_create_response_from_callback(MHD_SIZE_UNKNOWN, GZ_CACHE_SIZE, sqlite_row_read_callback, sji, sqlite_json_info_free);
-    if(resp == NULL) {
-      resp = MHD_create_response_from_buffer(sizeof(fake_ok_resp)-1, (void *)fake_ok_resp, MHD_RESPMEM_PERSISTENT);
+    if(stmt == NULL) {
+      char _respbuf[2048] = {0};
+      int nbyte = 0;
+      json_object *obj = NULL; //json_object_new_string(text);
+      sqlite_httpreq_set_compress(sr, 0);
+      obj = json_object_new_string(sqlite3_errmsg(shd.db));
+      nbyte = sprintf(_respbuf, "{\"jsondata\":[\"errmsg\": %s]}", json_object_to_json_string(obj));
+      json_object_put(obj);
+      resp = MHD_create_response_from_buffer(nbyte, (void *)_respbuf, MHD_RESPMEM_MUST_COPY);
+    } else {
+      sji = sqlite_json_info_new(stmt, sr->compress);
+      if(sji) {
+        resp = MHD_create_response_from_callback(MHD_SIZE_UNKNOWN, GZ_CACHE_SIZE, sqlite_row_read_callback, sji, sqlite_json_info_free);
+      } else {
+        resp = MHD_create_response_from_buffer(sizeof(outofmem_resp)-1, (void *)outofmem_resp, MHD_RESPMEM_PERSISTENT);
+      }
+
+      if(resp == NULL) {
+        resp = MHD_create_response_from_buffer(sizeof(fake_ok_resp)-1, (void *)fake_ok_resp, MHD_RESPMEM_PERSISTENT);
+      }
     }
   } else {
     resp = MHD_create_response_from_buffer(sizeof(outofmem_resp)-1, (void *)outofmem_resp, MHD_RESPMEM_PERSISTENT);

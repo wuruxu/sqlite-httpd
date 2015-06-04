@@ -21,20 +21,24 @@ sqlite_json_info_t* sqlite_json_info_new(sqlite3_stmt* stmt, int compress) {
 
   sji->stmt = stmt;
   sji->ncol = sqlite3_column_count(stmt);
-  sji->colnames = calloc(sji->ncol, sizeof(char *));
-  sji->coltypes = calloc(sji->ncol, sizeof(int));
+  if(sji->ncol > 0) {
+    sji->colnames = calloc(sji->ncol, sizeof(char *));
+    sji->coltypes = calloc(sji->ncol, sizeof(int));
+  }
   sji->initialized = 0;
   sji->rstart = 1;
   sji->compress = compress;
   sji->eos = EOS_FALSE;
 
-  if(NULL == sji->coltypes || NULL == sji->colnames) {
-    if(sji->colnames) {
-      free(sji->colnames);
-    }
-    free(sji);
+  if(sji->ncol > 0) {
+    if(NULL == sji->coltypes || NULL == sji->colnames) {
+      if(sji->colnames) {
+        free(sji->colnames);
+      }
+      free(sji);
 
-    return NULL;
+      return NULL;
+    }
   }
   if(compress) {
     sji->gzbuf = calloc(GZ_CACHE_SIZE, sizeof(char));
@@ -73,8 +77,15 @@ void sqlite_json_info_free(void *data) {
   if(sji->gzbuf) {
     free(sji->gzbuf);
   }
+  if(sji->stmt) {
+    sqlite3_finalize(sji->stmt);
+  }
 
-  free(sji->colnames);
-  free(sji->coltypes);
+  if(sji->colnames) {
+    free(sji->colnames);
+  }
+  if(sji->coltypes) {
+    free(sji->coltypes);
+  }
   free(sji);
 }
