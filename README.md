@@ -1,5 +1,5 @@
 # sqlite-httpd
-lightweight http server for sqlite 
+lightweight http server for sqlite   
 sqlitehttpd useage:
 ```
 sqlitehttpd /home/user/my.sqlite 8888
