@@ -4,6 +4,7 @@
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <signal.h>
 #include <json-c/json_object.h>
 
@@ -308,7 +309,7 @@ static int answer_http_connection (void* cls, struct MHD_Connection* connection,
     if(strcmp(url, "/sqlite") == 0) {
       sqlite_httpreq_t *sr = (sqlite_httpreq_t *) *con_cls;
 
-      DD("POST url %s, upload_data = %x, data_size = %d, sr = %x\n", url, (int)upload_data, (int)*upload_data_size, (unsigned int)sr);
+      DD("POST url %s, upload_data = %p, data_size = %d, sr = %p\n", url, upload_data, (int)*upload_data_size, sr);
       if(sr == NULL) {
         reqcnt++;
         DD("serve reqest count id %d\n", reqcnt);
@@ -361,11 +362,36 @@ static int answer_http_connection (void* cls, struct MHD_Connection* connection,
   return MHD_YES;
 }
 
+static void print_usage() {
+  printf("\tsqlitehttpd: a tiny http server for sqlite3\n");
+  printf("\t\t -p: set http server port.(default 8888)\n");
+  printf("\t\t -o: specify the sqlite database file.\n");
+}
+
 int main(int argc, char *argv[]) {
-  char *dbfile = argv[1];
-  char *port = argv[2];
-  int ret = 0;
-  int nport = atoi(port);
+  char *dbfile = NULL;
+  char *port = NULL;
+  int ret = 0, opt;
+  int nport = 8888;
+
+  while((opt = getopt(argc, argv, "p:o:h")) != -1) {
+    switch(opt) {
+    case 'p':
+      nport = atoi(optarg);
+      break;
+    case 'o':
+      dbfile = optarg;
+      break;
+    case 'h':
+      print_usage();
+      return 0;
+    }
+  }
+
+  if(dbfile == NULL) {
+    print_usage();
+    return 0;
+  }
 
   shd.base = event_base_new();
   ret = sqlite3_open(dbfile, &shd.db);
