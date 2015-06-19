@@ -1,6 +1,6 @@
 # sqlite-httpd
 lightweight http server for access sqlite database     
-######sqlitehttpd useage:
+######sqlitehttpd usage:
 ```
 sqlitehttpd -o /home/user/my.sqlite -p 8888
 ```
