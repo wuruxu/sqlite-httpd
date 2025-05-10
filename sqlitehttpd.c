@@ -4,9 +4,11 @@
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <signal.h>
 #include <json-c/json_object.h>
+#include <zconf.h>
 
 #include "internal-debug.h"
 #include "sqlite-http-req-struct.h"
@@ -16,7 +18,6 @@
 
 static const char fake_ok_resp[] = {"{\"status\": \"OK\"}"};
 static const char outofmem_resp[] = {"{\"status\": \"error = Out Of Memory\"}"};
-static const char ctype_resp[] = {"{\"status\": \" make sure content-type set as 'application/x-www-form-urlencoded'\"}"};
 
 typedef struct {
   struct event_base *base;
@@ -31,6 +32,8 @@ static unsigned int reqcnt = 0;
 static void signal_event(int fd, short event, void *arg) {
     sqlitehttpd_t *dp = (sqlitehttpd_t *) arg;
     int signum;
+    (void) fd;
+    (void) event;
 
     DD("%s: got signal %d\n", __func__, EVENT_SIGNAL(&dp->signal_int));
     signum = EVENT_SIGNAL(&dp->signal_int);
@@ -43,12 +46,22 @@ static void signal_event(int fd, short event, void *arg) {
     }
 }
 
-int post_iterator (void *cls, enum MHD_ValueKind kind, const char *key, const char *filename, const char *content_type, const char *transfer_encoding, const char *data, uint64_t off, size_t size) {
+enum MHD_Result post_iterator (void *cls, enum MHD_ValueKind kind, const char *key, const char *filename, const char *content_type, const char *transfer_encoding, const char *data, uint64_t off, size_t size) {
+    (void) cls;
+    (void) kind;
+    (void) key;
+    (void) filename;
+    (void) content_type;
+    (void) transfer_encoding;
+    (void) data;
+    (void) off;
+    (void) size;
     return MHD_YES;
 }
 
-static int parse_http_request_header(void *cls, enum MHD_ValueKind kind, const char *key, const char *value) {
+static enum MHD_Result parse_http_request_header(void *cls, enum MHD_ValueKind kind, const char *key, const char *value) {
   sqlite_httpreq_t *sr = (sqlite_httpreq_t *)cls;
+  (void) kind;
 
   if(sr == NULL) 
     return MHD_NO;
@@ -73,6 +86,7 @@ static int generate_json_from_stmt(char* buf, size_t max, sqlite_json_info_t* sj
   int off = 0;
   sqlite3_stmt *stmt = sji->stmt;
   char *ptr = buf;
+  (void) max;
 
   //DD("buf.addr = %x\n", buf);
   if(sji->rstart == 0) {
@@ -105,7 +119,7 @@ static int generate_json_from_stmt(char* buf, size_t max, sqlite_json_info_t* sj
       break;
 
       case SQLITE3_TEXT: {
-      const char *text = sqlite3_column_text(stmt, i);
+      const char *text = (const char *)sqlite3_column_text(stmt, i);
       if(! text) {
         text = "null";
       } else {
@@ -131,6 +145,8 @@ static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size
   char *respbuf = NULL;
   int outsize = 0;
   int _max = max;
+  (void) pos;
+
 
   if(sji->eos == EOS_TRUE) {
     return MHD_CONTENT_READER_END_OF_STREAM;
@@ -139,7 +155,7 @@ static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size
   //DD("sqlite_row_read_callback: pos = %d, buf = %x, max = %zu\n", pos, (unsigned int)buf, max);
 
   if(sji->compress) {
-    sji->zs.next_out = buf;
+    sji->zs.next_out = (Bytef *)buf;
     sji->zs.avail_out = _max;
     if(sji->zs.avail_in > 0 || sji->eos == EOS_GZING) {
       goto buf_compress;
@@ -152,7 +168,7 @@ static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size
 
     DD("S1-deflate out: ai %d, ao %d\n", sji->zs.avail_in, sji->zs.avail_out);
 
-    while(outsize < max) {
+    while((typeof(max))outsize < max) {
       nbyte = 0;
       ret = sqlite3_step(sji->stmt);
       //buf = buf + pos;
@@ -200,7 +216,7 @@ static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size
 
     if(sji->compress) {
         //DD("S2-deflate out: outsize= %d, _max %d , ai %d, ao %d\n", outsize, _max,  sji->zs.avail_in, sji->zs.avail_out);
-        sji->zs.next_in = sji->gzbuf;
+        sji->zs.next_in = (Bytef*)sji->gzbuf;
         sji->zs.avail_in = outsize;
 
   buf_compress:
@@ -252,7 +268,8 @@ static ssize_t sqlite_row_read_callback(void *cls, uint64_t pos, char* buf, size
     DD("S4-deflate out: ai %d, ao %d\n", sji->zs.avail_in, sji->zs.avail_out);
   } while(sji->compress && sji->zs.avail_out > 0);
 
-  outsize = sji->compress ? _max - sji->zs.avail_out : outsize;
+  if (sji->compress)
+    outsize = _max - sji->zs.avail_out;
   //DD("END-callback deflate out: ai %d, ao %d, outsize = %d\n\n", sji->zs.avail_in, sji->zs.avail_out, outsize);
 
   return outsize;
@@ -263,14 +280,12 @@ static struct MHD_Response* process_sqlite_request(sqlite_httpreq_t *sr) {
   int len = evbuffer_get_length(sr->buf);
   char *sbuf = calloc(len+1, sizeof(char));
   struct sqlite3_stmt* stmt = NULL;
-  int ret = 0;
-  struct evbuffer *jsonbuf = NULL;
   sqlite_json_info_t *sji = NULL;
 
   if(sbuf != NULL) {
     evbuffer_remove(sr->buf, sbuf, len);
     DD("sbuf = %s\n\n", sbuf);
-    ret = sqlite3_prepare_v2(shd.db, sbuf, len, &stmt, NULL);
+    sqlite3_prepare_v2(shd.db, sbuf, len, &stmt, NULL);
     free(sbuf);
     if(stmt == NULL) {
       char _respbuf[2048] = {0};
@@ -302,8 +317,10 @@ static struct MHD_Response* process_sqlite_request(sqlite_httpreq_t *sr) {
   return resp;
 }
 
-static int answer_http_connection (void* cls, struct MHD_Connection* connection, const char* url, const char* method, const char* version, const char* upload_data, size_t* upload_data_size, void** con_cls) {
+static enum MHD_Result answer_http_connection (void* cls, struct MHD_Connection* connection, const char* url, const char* method, const char* version, const char* upload_data, size_t* upload_data_size, void** con_cls) {
   struct MHD_Response *resp = NULL;
+  (void) cls;
+  (void) version;
 
   if(strcmp(method, MHD_HTTP_METHOD_POST) == 0) {
     if(strcmp(url, "/sqlite") == 0) {
@@ -370,7 +387,6 @@ static void print_usage() {
 
 int main(int argc, char *argv[]) {
   char *dbfile = NULL;
-  char *port = NULL;
   int ret = 0, opt;
   int nport = 8888;
 

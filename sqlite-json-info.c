@@ -1,11 +1,9 @@
 #include <stdlib.h>
 #include <sqlite3.h>
 #include "sqlite-json-info.h"
-#include "internal-debug.h"
 
 sqlite_json_info_t* sqlite_json_info_new(sqlite3_stmt* stmt, int compress) {
   sqlite_json_info_t *sji = calloc(1, sizeof(sqlite_json_info_t));
-  int i = 0;
 
   if(!sji) return NULL;
 
